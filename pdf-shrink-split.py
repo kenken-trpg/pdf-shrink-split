@@ -251,19 +251,19 @@ if __name__ == "__main__":
             args = args[:idx] + args[idx + 2:]
         except (IndexError, ValueError):
             print("エラー: --char-limit には数値を指定してください。")
-            print("使用法: python pdf_image_remover.py 入力.pdf [--char-limit 100000]")
+            print("使用法: python pdf-shrink-split.py 入力.pdf [--char-limit 100000]")
             sys.exit(1)
 
     if len(args) == 1:
         input_file = args[0]
     elif len(args) == 0:
-        print("使用法: python pdf_image_remover.py 入力.pdf [--char-limit 100000]")
+        print("使用法: python pdf-shrink-split.py 入力.pdf [--char-limit 100000]")
         print()
         print("PDFから画像を削除し、字数制限（デフォルト10万字）を超える場合は")
         print("複数のファイルに自動分割します。")
         sys.exit(0)
     else:
-        print("使用法: python pdf_image_remover.py 入力.pdf [--char-limit 100000]")
+        print("使用法: python pdf-shrink-split.py 入力.pdf [--char-limit 100000]")
         sys.exit(1)
 
     if not os.path.exists(input_file):
