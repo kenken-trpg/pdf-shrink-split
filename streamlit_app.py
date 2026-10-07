@@ -1,6 +1,7 @@
 import streamlit as st
 import io
 import os
+import zipfile
 from PyPDF2 import PdfReader, PdfWriter
 from PyPDF2.generic import NullObject
 from pikepdf import Pdf, ObjectStreamMode
@@ -135,53 +136,70 @@ with col2:
     process_btn = st.button("🚀 処理開始", type="primary", use_container_width=True)
 
 # 処理実行
-if process_btn and uploaded_file:
-    with st.spinner("処理中..."):
-        try:
-            result = split_and_process_pdf(uploaded_file, char_limit)
+if process_btn:
+    if not uploaded_file:
+        st.warning("⚠️ 先にPDFファイルをアップロードしてください")
+        st.session_state.pop("result", None)
+    else:
+        with st.spinner("処理中..."):
+            try:
+                st.session_state["result"] = split_and_process_pdf(
+                    uploaded_file, char_limit)
+                st.session_state.pop("error", None)
+            except Exception as e:
+                st.session_state.pop("result", None)
+                st.session_state["error"] = e
 
-            st.success("✅ 処理が完了しました！")
+if "error" in st.session_state:
+    e = st.session_state["error"]
+    st.error(f"❌ エラーが発生しました: {str(e)}")
+    st.exception(e)
 
-            # 結果表示
-            st.subheader("📊 処理結果")
-            info_col1, info_col2, info_col3 = st.columns(3)
-            with info_col1:
-                st.metric("総ページ数", result["total_pages"])
-            with info_col2:
-                st.metric("総字数", f"{result['total_chars']:,}")
-            with info_col3:
-                st.metric("出力ファイル数", len(result["files"]))
+# 結果表示（ダウンロードで再実行されてもsession_stateから復元される）
+if "result" in st.session_state:
+    result = st.session_state["result"]
 
-            st.divider()
+    st.success("✅ 処理が完了しました！")
 
-            # ダウンロードボタン
-            st.subheader("⬇️ ダウンロード")
+    st.subheader("📊 処理結果")
+    info_col1, info_col2, info_col3 = st.columns(3)
+    with info_col1:
+        st.metric("総ページ数", result["total_pages"])
+    with info_col2:
+        st.metric("総字数", f"{result['total_chars']:,}")
+    with info_col3:
+        st.metric("出力ファイル数", len(result["files"]))
 
-            if len(result["files"]) == 1:
-                file = result["files"][0]
-                st.download_button(
-                    label=f"📄 {file['name']} ({file['pages']}ページ, {file['chars']:,}字)",
-                    data=file["bytes"],
-                    file_name=file["name"],
-                    mime="application/pdf",
-                    use_container_width=True
-                )
-            else:
-                for file in result["files"]:
-                    st.download_button(
-                        label=f"📄 {file['name']} ({file['pages']}ページ, {file['chars']:,}字)",
-                        data=file["bytes"],
-                        file_name=file["name"],
-                        mime="application/pdf",
-                        use_container_width=True
-                    )
+    st.divider()
 
-        except Exception as e:
-            st.error(f"❌ エラーが発生しました: {str(e)}")
-            st.exception(e)
+    # ダウンロードボタン
+    st.subheader("⬇️ ダウンロード")
 
-elif process_btn and not uploaded_file:
-    st.warning("⚠️ 先にPDFファイルをアップロードしてください")
+    for idx, file in enumerate(result["files"]):
+        st.download_button(
+            label=f"📄 {file['name']} ({file['pages']}ページ, {file['chars']:,}字)",
+            data=file["bytes"],
+            file_name=file["name"],
+            mime="application/pdf",
+            use_container_width=True,
+            key=f"dl_{idx}_{file['name']}"
+        )
+
+    if len(result["files"]) > 1:
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for file in result["files"]:
+                zf.writestr(file["name"], file["bytes"])
+        st.download_button(
+            label=f"🗂️ すべてまとめてダウンロード (ZIP, {len(result['files'])}ファイル)",
+            data=zip_buf.getvalue(),
+            file_name="pdf_split_files.zip",
+            mime="application/zip",
+            use_container_width=True,
+            key="dl_zip"
+        )
+
+    st.caption("※ ダウンロード後もこの一覧は残ります。再処理する場合のみ「処理開始」を押してください。")
 
 # フッター
 st.divider()
