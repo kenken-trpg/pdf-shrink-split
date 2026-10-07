@@ -73,6 +73,25 @@ pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
+## 🧪 開発・テスト
+```bash
+pip install -r requirements-dev.txt
+pytest tests -v
+```
+
+テストに使うPDFはリポジトリにバイナリを置かず、`tests/pdf_fixtures.py` が実行時に生成します。
+画像をForm XObjectの入れ子・ソフトマスクグループ・パターン・注釈の外観の中に埋め込んだ検体を作り、
+それらが削除されることを確認します。
+
+GitHub Actions（`.github/workflows/ci.yml`）では、push と pull request ごとに
+Python 3.11 / 3.14 でテストと `requirements.txt` のピン留めチェックを実行します。
+
+> **デプロイについて**: Streamlit Community Cloud はリポジトリを監視して
+> push ごとに自動で再デプロイします（SCCに外部からデプロイを叩くAPIはありません）。
+> そのため CI はデプロイを行わず、品質ゲートとしてのみ動作します。
+> `requirements.txt` を固定しているのは、SCCが再ビルドのたびに最新版を取得して
+> デプロイ版の挙動が勝手に変わるのを防ぐためです。
+
 ## 技術的詳細
 ### 画像削除のメカニズム
 画像はページ直下の `/Resources/XObject` だけでなく、Form XObjectの入れ子や

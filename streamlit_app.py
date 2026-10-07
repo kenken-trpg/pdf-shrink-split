@@ -90,8 +90,9 @@ def strip_images_from_resources(resources, seen=None):
 
 # ページから削除しても本文テキストに影響しないエントリ
 # /PieceInfo には Photoshop/Illustrator が元画像の複製を丸ごと残すことがある
+# 出力は Pdf.new() の新規文書にページを追加して作るため、文書レベルの
+# /Metadata や /StructTreeRoot は最初から引き継がれない（削除処理は不要）
 PAGE_CRUFT_KEYS = ("/PieceInfo", "/Thumb", "/Metadata", "/B", "/StructParents")
-ROOT_CRUFT_KEYS = ("/Metadata", "/PieceInfo", "/StructTreeRoot")
 
 
 def clean_page(page):
@@ -129,10 +130,6 @@ def build_pdf_bytes(source_pdf, page_indices):
     removed_images = 0
     for page in out_pdf.pages:
         removed_images += clean_page(page)
-
-    for key in ROOT_CRUFT_KEYS:
-        if key in out_pdf.Root:
-            del out_pdf.Root[key]
 
     out_pdf.remove_unreferenced_resources()
 

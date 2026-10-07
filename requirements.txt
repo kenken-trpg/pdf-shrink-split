@@ -1,3 +1,6 @@
-streamlit
-PyPDF2
-pikepdf
+# Streamlit Community Cloud は requirements.txt の変更を検知して再ビルドする。
+# バージョンを固定しておかないと、コミットしていないのに再ビルドのたびに
+# デプロイ版の依存が変わってしまうため、必ずピン留めしておく。
+streamlit==1.65.0
+pikepdf==10.16.0
+PyPDF2==3.0.1
