@@ -26,8 +26,8 @@ import warnings
 logging.getLogger("PyPDF2").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore", module="PyPDF2")
 
-from PyPDF2 import PdfReader, PdfWriter
-from PyPDF2.generic import NullObject
+from PyPDF2 import PdfReader
+import pikepdf
 from pikepdf import Pdf, ObjectStreamMode
 
 
@@ -57,31 +57,124 @@ def make_output_paths(input_path, num_parts):
     return [f"{base}_part{i+1}{ext}" for i in range(num_parts)]
 
 
-def remove_images_from_pages(reader, page_indices):
-    """指定されたページから画像を削除し、PdfWriterを返す"""
-    writer = PdfWriter()
+def strip_images_from_resources(resources, seen=None):
+    """Resources辞書を再帰的に辿って画像XObjectを削除し、削除数を返す
+
+    画像はページ直下の /Resources/XObject だけでなく、Form XObject の
+    入れ子、ソフトマスクグループ(/ExtGState -> /SMask -> /G)、
+    パターンの中にも置かれているため再帰的に処理する必要がある。
+    """
+    if resources is None:
+        return 0
+
+    if seen is None:
+        seen = set()
+    objgen = getattr(resources, "objgen", (0, 0))
+    if objgen != (0, 0):
+        # 循環参照・共有リソースの二重処理を防ぐ
+        if objgen in seen:
+            return 0
+        seen.add(objgen)
+
+    removed = 0
+
+    xobjects = resources.get("/XObject")
+    if xobjects is not None:
+        for name in list(xobjects.keys()):
+            try:
+                xobj = xobjects[name]
+                subtype = str(xobj.get("/Subtype"))
+                if subtype == "/Image":
+                    del xobjects[name]
+                    removed += 1
+                elif subtype == "/Form":
+                    removed += strip_images_from_resources(
+                        xobj.get("/Resources"), seen)
+            except Exception:
+                pass
+
+    ext_gstates = resources.get("/ExtGState")
+    if ext_gstates is not None:
+        for name in list(ext_gstates.keys()):
+            try:
+                smask = ext_gstates[name].get("/SMask")
+                # /SMask は /None という名前オブジェクトの場合もある
+                if smask is None or isinstance(smask, pikepdf.Name):
+                    continue
+                group = smask.get("/G")
+                if group is not None:
+                    removed += strip_images_from_resources(
+                        group.get("/Resources"), seen)
+            except Exception:
+                pass
+
+    patterns = resources.get("/Pattern")
+    if patterns is not None:
+        for name in list(patterns.keys()):
+            try:
+                removed += strip_images_from_resources(
+                    patterns[name].get("/Resources"), seen)
+            except Exception:
+                pass
+
+    return removed
+
+
+# ページから削除しても本文テキストに影響しないエントリ
+# /PieceInfo には Photoshop/Illustrator が元画像の複製を丸ごと残すことがある
+PAGE_CRUFT_KEYS = ("/PieceInfo", "/Thumb", "/Metadata", "/B", "/StructParents")
+ROOT_CRUFT_KEYS = ("/Metadata", "/PieceInfo", "/StructTreeRoot")
+
+
+def clean_page(page):
+    """1ページから画像と不要なメタデータを削除し、削除した画像数を返す"""
+    removed = strip_images_from_resources(page.get("/Resources"))
+
+    annots = page.get("/Annots")
+    if annots is not None:
+        for annot in annots:
+            try:
+                appearance = annot.get("/AP")
+                if appearance is None:
+                    continue
+                for state in list(appearance.keys()):
+                    stream = appearance[state]
+                    if isinstance(stream, pikepdf.Stream):
+                        removed += strip_images_from_resources(
+                            stream.get("/Resources"))
+            except Exception:
+                pass
+
+    for key in PAGE_CRUFT_KEYS:
+        if key in page:
+            del page[key]
+
+    return removed
+
+
+def write_cleaned_pdf(source_pdf, page_indices, output_path):
+    """指定ページを抜き出し、画像を削除・圧縮して保存する"""
+    out_pdf = Pdf.new()
     for page_num in page_indices:
-        page = reader.pages[page_num]
-        if "/Resources" in page and "/XObject" in page["/Resources"]:
-            xObject = page["/Resources"]["/XObject"].get_object()
-            for obj in list(xObject.keys()):
-                try:
-                    if xObject[obj]["/Subtype"] == "/Image":
-                        xObject[obj] = NullObject()
-                except Exception:
-                    pass
-        writer.add_page(page)
-    return writer
+        out_pdf.pages.append(source_pdf.pages[page_num])
 
+    removed_images = 0
+    for page in out_pdf.pages:
+        removed_images += clean_page(page)
 
-def save_compressed(writer, output_path):
-    """PdfWriterの内容をpikepdfで圧縮して保存する"""
-    with io.BytesIO() as buf:
-        writer.write(buf)
-        buf.seek(0)
-        pdf_out = Pdf.open(buf)
-        pdf_out.save(output_path, compress_streams=True,
-                     object_stream_mode=ObjectStreamMode.generate)
+    for key in ROOT_CRUFT_KEYS:
+        if key in out_pdf.Root:
+            del out_pdf.Root[key]
+
+    out_pdf.remove_unreferenced_resources()
+
+    out_pdf.save(
+        output_path,
+        compress_streams=True,
+        recompress_flate=True,
+        object_stream_mode=ObjectStreamMode.generate,
+    )
+    return removed_images
 
 
 def split_and_process_pdf(input_path, char_limit=100000):
@@ -124,13 +217,22 @@ def split_and_process_pdf(input_path, char_limit=100000):
         print(f"📄 {len(groups)}個のファイルに分割します。")
 
     # 各グループを処理・保存
-    for idx, (group, out_path) in enumerate(zip(groups, output_paths)):
-        group_chars = sum(char_counts[p] for p in group)
-        writer = remove_images_from_pages(reader, group)
-        save_compressed(writer, out_path)
-        print(f"  [{idx+1}/{len(groups)}] {os.path.basename(out_path)}"
-              f"  ({len(group)}ページ, {group_chars:,}字)")
+    removed_images = 0
+    with Pdf.open(input_path) as source_pdf:
+        for idx, (group, out_path) in enumerate(zip(groups, output_paths)):
+            group_chars = sum(char_counts[p] for p in group)
+            removed_images += write_cleaned_pdf(source_pdf, group, out_path)
+            print(f"  [{idx+1}/{len(groups)}] {os.path.basename(out_path)}"
+                  f"  ({len(group)}ページ, {group_chars:,}字,"
+                  f" {os.path.getsize(out_path)/1024/1024:.2f}MB)")
 
+    original_size = os.path.getsize(input_path)
+    output_size = sum(os.path.getsize(p) for p in output_paths)
+    reduction = 100 - output_size * 100 / original_size if original_size else 0
+    print()
+    print(f"削除した画像: {removed_images:,}個")
+    print(f"サイズ: {original_size/1024/1024:.2f}MB"
+          f" → {output_size/1024/1024:.2f}MB ({reduction:.1f}% 削減)")
     print(f"\n✅ 完了しました！")
     return output_paths
 
