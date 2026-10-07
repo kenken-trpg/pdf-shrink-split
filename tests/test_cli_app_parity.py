@@ -30,6 +30,7 @@ def test_same_bytes_as_cli(cli, app, uploaded, tmp_path):
 def test_both_expose_the_same_helpers(cli, app):
     """両方に同じ処理関数が存在する"""
     for name in ("strip_images_from_resources", "clean_page",
-                 "count_characters_per_page", "split_and_process_pdf"):
+                 "count_characters_per_page", "split_and_process_pdf",
+                 "check_text_coverage", "TextlessPdfError"):
         assert hasattr(cli, name), f"CLI版に {name} がありません"
         assert name in app, f"Streamlit版に {name} がありません"

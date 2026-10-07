@@ -25,6 +25,43 @@ def count_characters_per_page(reader):
     return char_counts
 
 
+# テキストを持たないPDF（スキャンした画像のみのPDFなど）は、画像を削除すると
+# 内容そのものが失われる。意図せず空のPDFを作らないための安全弁。
+TEXTLESS_WARNING_RATIO = 0.5
+
+
+class TextlessPdfError(Exception):
+    """抽出できるテキストが1字もないPDFを処理しようとした"""
+
+    def __init__(self, total_pages):
+        self.total_pages = total_pages
+        super().__init__(
+            f"このPDFからはテキストを抽出できません（{total_pages}ページすべて0字）。"
+            "スキャンした画像のみのPDFの可能性が高く、"
+            "画像を削除すると内容が失われます。")
+
+
+def check_text_coverage(char_counts, force=False):
+    """テキストの有無を調べ、警告文のリストを返す
+
+    1字も抽出できない場合は TextlessPdfError を投げる（force=Trueなら続行）。
+    一部のページだけテキストがない場合は警告だけ返して処理は続ける。
+    """
+    total_pages = len(char_counts)
+    empty_pages = sum(1 for count in char_counts if count == 0)
+
+    if total_pages and sum(char_counts) == 0 and not force:
+        raise TextlessPdfError(total_pages)
+
+    warnings = []
+    if empty_pages and empty_pages >= total_pages * TEXTLESS_WARNING_RATIO:
+        warnings.append(
+            f"{total_pages}ページ中{empty_pages}ページからテキストを"
+            "抽出できませんでした。スキャン画像のページである可能性があり、"
+            "画像を削除すると内容が失われます。")
+    return warnings
+
+
 def strip_images_from_resources(resources, seen=None):
     """Resources辞書を再帰的に辿って画像XObjectを削除し、削除数を返す
 
@@ -143,7 +180,7 @@ def build_pdf_bytes(source_pdf, page_indices):
     return buf.getvalue(), removed_images
 
 
-def split_and_process_pdf(uploaded_file, char_limit=100000):
+def split_and_process_pdf(uploaded_file, char_limit=100000, force=False):
     """PDFから画像を削除し、字数制限で分割してバイト列のリストを返す"""
     pdf_data = uploaded_file.getvalue()
 
@@ -151,6 +188,8 @@ def split_and_process_pdf(uploaded_file, char_limit=100000):
     char_counts = count_characters_per_page(reader)
     total_pages = len(char_counts)
     total_chars = sum(char_counts)
+
+    text_warnings = check_text_coverage(char_counts, force)
 
     groups = []
     current_group = []
@@ -195,6 +234,7 @@ def split_and_process_pdf(uploaded_file, char_limit=100000):
         "original_size": len(pdf_data),
         "output_size": sum(len(f["bytes"]) for f in output_files),
         "removed_images": removed_images,
+        "warnings": text_warnings,
         "files": output_files
     }
 
@@ -229,20 +269,42 @@ with col2:
     st.markdown("<br>", unsafe_allow_html=True)
     process_btn = st.button("🚀 処理開始", type="primary", use_container_width=True)
 
+def run_processing(file, limit, force=False):
+    """処理を実行し、結果をsession_stateに保存する"""
+    for key in ("result", "error", "textless"):
+        st.session_state.pop(key, None)
+    with st.spinner("処理中..."):
+        try:
+            st.session_state["result"] = split_and_process_pdf(
+                file, limit, force)
+        except TextlessPdfError as e:
+            # テキストのないPDFは画像を削除すると中身が消えるため、
+            # 黙って空のPDFを返さずに確認を求める
+            st.session_state["textless"] = str(e)
+        except Exception as e:
+            st.session_state["error"] = e
+
+
 # 処理実行
 if process_btn:
     if not uploaded_file:
         st.warning("⚠️ 先にPDFファイルをアップロードしてください")
         st.session_state.pop("result", None)
     else:
-        with st.spinner("処理中..."):
-            try:
-                st.session_state["result"] = split_and_process_pdf(
-                    uploaded_file, char_limit)
-                st.session_state.pop("error", None)
-            except Exception as e:
-                st.session_state.pop("result", None)
-                st.session_state["error"] = e
+        run_processing(uploaded_file, char_limit)
+
+# テキストを抽出できないPDFの確認
+if "textless" in st.session_state:
+    st.error(f"❌ {st.session_state['textless']}")
+    st.markdown(
+        "スキャンしたPDFはこのツールの対象外です。"
+        "元のファイルをそのままお使いください。")
+    if st.button("⚠️ それでも画像を削除して処理する"):
+        if uploaded_file:
+            run_processing(uploaded_file, char_limit, force=True)
+            st.rerun()
+        else:
+            st.warning("⚠️ PDFファイルを再度アップロードしてください")
 
 if "error" in st.session_state:
     e = st.session_state["error"]
@@ -254,6 +316,9 @@ if "result" in st.session_state:
     result = st.session_state["result"]
 
     st.success("✅ 処理が完了しました！")
+
+    for warning in result.get("warnings", []):
+        st.warning(f"⚠️ {warning}")
 
     st.subheader("📊 処理結果")
     info_col1, info_col2, info_col3 = st.columns(3)

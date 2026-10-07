@@ -57,6 +57,43 @@ def make_output_paths(input_path, num_parts):
     return [f"{base}_part{i+1}{ext}" for i in range(num_parts)]
 
 
+# テキストを持たないPDF（スキャンした画像のみのPDFなど）は、画像を削除すると
+# 内容そのものが失われる。意図せず空のPDFを作らないための安全弁。
+TEXTLESS_WARNING_RATIO = 0.5
+
+
+class TextlessPdfError(Exception):
+    """抽出できるテキストが1字もないPDFを処理しようとした"""
+
+    def __init__(self, total_pages):
+        self.total_pages = total_pages
+        super().__init__(
+            f"このPDFからはテキストを抽出できません（{total_pages}ページすべて0字）。"
+            "スキャンした画像のみのPDFの可能性が高く、"
+            "画像を削除すると内容が失われます。")
+
+
+def check_text_coverage(char_counts, force=False):
+    """テキストの有無を調べ、警告文のリストを返す
+
+    1字も抽出できない場合は TextlessPdfError を投げる（force=Trueなら続行）。
+    一部のページだけテキストがない場合は警告だけ返して処理は続ける。
+    """
+    total_pages = len(char_counts)
+    empty_pages = sum(1 for count in char_counts if count == 0)
+
+    if total_pages and sum(char_counts) == 0 and not force:
+        raise TextlessPdfError(total_pages)
+
+    warnings = []
+    if empty_pages and empty_pages >= total_pages * TEXTLESS_WARNING_RATIO:
+        warnings.append(
+            f"{total_pages}ページ中{empty_pages}ページからテキストを"
+            "抽出できませんでした。スキャン画像のページである可能性があり、"
+            "画像を削除すると内容が失われます。")
+    return warnings
+
+
 def strip_images_from_resources(resources, seen=None):
     """Resources辞書を再帰的に辿って画像XObjectを削除し、削除数を返す
 
@@ -174,7 +211,7 @@ def write_cleaned_pdf(source_pdf, page_indices, output_path):
     return removed_images
 
 
-def split_and_process_pdf(input_path, char_limit=100000):
+def split_and_process_pdf(input_path, char_limit=100000, force=False):
     """PDFから画像を削除し、字数制限で分割して保存する"""
     reader = PdfReader(input_path)
     total_pages = len(reader.pages)
@@ -188,6 +225,9 @@ def split_and_process_pdf(input_path, char_limit=100000):
     print(f"総字数:   {total_chars:,}")
     print(f"字数制限: {char_limit:,}")
     print(f"------------------------")
+
+    for warning in check_text_coverage(char_counts, force):
+        print(f"⚠️  {warning}")
 
     # ページを分割グループに振り分け
     groups = []
@@ -240,6 +280,10 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     char_limit = 100000
 
+    # --force オプションの処理（テキストのないPDFでも処理を続行する）
+    force = "--force" in args
+    args = [a for a in args if a != "--force"]
+
     # --char-limit オプションの処理
     if "--char-limit" in args:
         idx = args.index("--char-limit")
@@ -248,23 +292,33 @@ if __name__ == "__main__":
             args = args[:idx] + args[idx + 2:]
         except (IndexError, ValueError):
             print("エラー: --char-limit には数値を指定してください。")
-            print("使用法: python pdf-shrink-split.py 入力.pdf [--char-limit 100000]")
+            print("使用法: python pdf-shrink-split.py 入力.pdf [--char-limit 100000] [--force]")
             sys.exit(1)
 
     if len(args) == 1:
         input_file = args[0]
     elif len(args) == 0:
-        print("使用法: python pdf-shrink-split.py 入力.pdf [--char-limit 100000]")
+        print("使用法: python pdf-shrink-split.py 入力.pdf [--char-limit 100000] [--force]")
         print()
         print("PDFから画像を削除し、字数制限（デフォルト10万字）を超える場合は")
         print("複数のファイルに自動分割します。")
+        print()
+        print("  --char-limit N  分割する字数のしきい値（デフォルト: 100000）")
+        print("  --force         テキストを抽出できないPDFでも処理を続行する")
         sys.exit(0)
     else:
-        print("使用法: python pdf-shrink-split.py 入力.pdf [--char-limit 100000]")
+        print("使用法: python pdf-shrink-split.py 入力.pdf [--char-limit 100000] [--force]")
         sys.exit(1)
 
     if not os.path.exists(input_file):
         print(f"エラー: ファイルが見つかりません: {input_file}")
         sys.exit(1)
 
-    split_and_process_pdf(input_file, char_limit)
+    try:
+        split_and_process_pdf(input_file, char_limit, force)
+    except TextlessPdfError as error:
+        print(f"❌ {error}")
+        print()
+        print("このPDFはこのツールの対象外です。元のファイルをそのままお使いください。")
+        print("それでも画像を削除したい場合は --force を付けて実行してください。")
+        sys.exit(1)

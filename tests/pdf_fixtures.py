@@ -36,8 +36,10 @@ def _form(pdf, resources, content=b"q /Im0 Do Q"):
 
 
 def build_pdf(path, pages=1, text_per_page="Hello PDF shrink split. ",
-              nested=True, piece_info=True):
+              nested=True, piece_info=True, empty_pages=0):
     """検証用PDFを生成して保存する
+
+    empty_pages に枚数を指定すると、その枚数だけテキストのないページを作る。
 
     nested=True のとき、画像をページ直下だけでなく
     Form XObjectの入れ子・ソフトマスクグループ・パターン・注釈の外観の
@@ -49,7 +51,12 @@ def build_pdf(path, pages=1, text_per_page="Hello PDF shrink split. ",
         Encoding=Name.WinAnsiEncoding))
 
     for page_num in range(pages):
-        text = (text_per_page * 40).strip()
+        # empty_pages で指定した枚数は、テキストを持たない
+        # （スキャン画像だけの）ページとして作る
+        if page_num < empty_pages:
+            text = ""
+        else:
+            text = (text_per_page * 40).strip()
         content = (f"BT /F1 12 Tf 40 700 Td ({text}) Tj ET\n"
                    "q /Im0 Do Q\n"
                    "q /GS0 gs /Fm0 Do Q\n"
@@ -117,11 +124,20 @@ def build_pdf(path, pages=1, text_per_page="Hello PDF shrink split. ",
 
     if piece_info:
         # 文書レベルの余剰データ（XMPメタデータ・構造ツリー・私的データ）
+        # pikepdfが保存時に解析するため、妥当なXMPにしておく
+        # （不正なXMPだと "Error occurred parsing XMP" が大量に出る）
+        xmp = (b'<?xpacket begin="\xef\xbb\xbf" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+               b'<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+               b'<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+               b'<rdf:Description rdf:about="" '
+               b'xmlns:dc="http://purl.org/dc/elements/1.1/">'
+               b"<dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">"
+               b"fixture</rdf:li></rdf:Alt></dc:title>"
+               b"</rdf:Description></rdf:RDF></x:xmpmeta>"
+               + b" " * 4000
+               + b'<?xpacket end="w"?>')
         pdf.Root.Metadata = pdf.make_stream(
-            b'<?xpacket begin="" ?><x:xmpmeta xmlns:x="adobe:ns:meta/">'
-            + b"<!-- padding -->" * 500
-            + b"</x:xmpmeta><?xpacket end=\"w\"?>",
-            Type=Name.Metadata, Subtype=Name.XML)
+            xmp, Type=Name.Metadata, Subtype=Name.XML)
         pdf.Root.StructTreeRoot = Dictionary(
             Type=Name.StructTreeRoot,
             K=Array([Dictionary(Type=Name.StructElem, S=Name.P)] * 50))
