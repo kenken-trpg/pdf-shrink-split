@@ -5,7 +5,7 @@
 """
 import os
 
-from pdf_fixtures import build_pdf
+from pdf_fixtures import build_pdf, without_file_id
 
 
 def test_same_bytes_as_cli(cli, app, uploaded, tmp_path):
@@ -23,7 +23,8 @@ def test_same_bytes_as_cli(cli, app, uploaded, tmp_path):
 
     for cli_path, app_file in zip(cli_outputs, app_result["files"]):
         assert os.path.basename(cli_path) == app_file["name"]
-        assert open(cli_path, "rb").read() == app_file["bytes"], (
+        cli_bytes = without_file_id(open(cli_path, "rb").read())
+        assert cli_bytes == without_file_id(app_file["bytes"]), (
             f"{app_file['name']} の内容がCLI版とStreamlit版で一致しません")
 
 
