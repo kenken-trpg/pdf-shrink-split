@@ -5,6 +5,7 @@ XObjectと違ってコンテンツストリームに直接書かれているた�
 """
 import io
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import pikepdf
 import pytest
@@ -131,7 +132,11 @@ def test_rules_survive_rewriting_the_stream(app, uploaded, tmp_path):
     assert extracted_chars(result) == result["total_chars"] > 0
 
 
-@pytest.mark.parametrize("broken", [b"BT (unterminated ", b"<< /a ", b"[ (a) "])
+BROKEN_CONTENT = [b"BT (unterminated ", b"<< /a ", b"[ (a) ",
+                  b"BI /W 1 /H 1 /BPC 8 /CS /G ID xxxx "]
+
+
+@pytest.mark.parametrize("broken", BROKEN_CONTENT)
 def test_broken_stream_is_left_untouched(app, uploaded, tmp_path, broken):
     """解析が途中で止まるストリームを書き戻して本文を失わない
 
@@ -147,6 +152,26 @@ def test_broken_stream_is_left_untouched(app, uploaded, tmp_path, broken):
 
     assert result["removed_images"] == 0
     assert b"(After)" in page_content(result["files"][0])
+
+
+def test_broken_streams_are_safe_under_concurrency(app, tmp_path):
+    """Web版の同時処理でも、壊れたストリームの本文を失わない"""
+    after = b"BT /F1 12 Tf 40 500 Td (After) Tj ET\n"
+    streams = []
+    for index, broken in enumerate(BROKEN_CONTENT * 10):
+        path = build_inline_pdf(tmp_path / f"broken{index}.pdf",
+                                locations=("page",), trailer=broken + after)
+        pdf = pikepdf.open(path)
+        streams.append((pdf, pdf.pages[0].Contents))
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        removed = list(pool.map(
+            lambda item: app["strip_inline_images"](item[1]), streams))
+
+    assert removed == [0] * len(streams)
+    for pdf, stream in streams:
+        assert b"(After)" in stream.read_bytes()
+        pdf.close()
 
 
 def test_shared_form_is_counted_once(app, uploaded, tmp_path):
@@ -203,3 +228,12 @@ def test_same_bytes_as_cli(cli, app, uploaded, tmp_path):
         assert os.path.basename(cli_path) == app_file["name"]
         cli_bytes = without_file_id(open(cli_path, "rb").read())
         assert cli_bytes == without_file_id(app_file["bytes"])
+
+
+@pytest.mark.parametrize("reduction, expected", [
+    (99.5, "-99.5%"),
+    (-0.1, "+0.1%"),
+])
+def test_size_change_has_a_single_sign(app, reduction, expected):
+    """出力のほうが大きいときに「--0.1%」と表示しない"""
+    assert app["format_size_change"](reduction) == expected
