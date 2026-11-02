@@ -63,6 +63,19 @@ def check_text_coverage(char_counts, force=False):
     return warnings
 
 
+def is_removable_inline_image(instruction):
+    """コンテンツの命令が、削除してよいインライン画像かどうかを返す
+
+    ImageMask は現在の色で塗るステンシルで、ビットマップの字形などに使われる。
+    1画素の画像は実質的に塗りつぶしの矩形で、TeX系のPDFは表の罫線や分数の
+    横棒をこれを引き伸ばして描く。どちらも写真ではなく本文の一部なので残す。
+    """
+    if not isinstance(instruction, pikepdf.ContentStreamInlineImage):
+        return False
+    image = instruction.iimage
+    return not image.image_mask and image.width * image.height > 1
+
+
 def strip_inline_images(stream):
     """コンテンツストリームからインライン画像(BI...EI)を削除し、削除数を返す
 
@@ -71,7 +84,8 @@ def strip_inline_images(stream):
     その後ろの本文まで失われてしまう。
 
     Type 3 フォントのグリフはインライン画像で字形を描くことがあり、削除すると
-    本文が壊れるため /Font は辿らない。
+    本文が壊れるため /Font は辿らない。同じ理由で、罫線や字形を描くための
+    インライン画像も残す（is_removable_inline_image を参照）。
     """
     if not isinstance(stream, pikepdf.Stream):
         return 0
@@ -87,8 +101,7 @@ def strip_inline_images(stream):
             return 0
 
         kept = [instruction for instruction in instructions
-                if not isinstance(instruction,
-                                  pikepdf.ContentStreamInlineImage)]
+                if not is_removable_inline_image(instruction)]
         removed = len(instructions) - len(kept)
         if removed:
             stream.write(pikepdf.unparse_content_stream(kept))

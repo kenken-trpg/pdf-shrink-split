@@ -10,8 +10,9 @@ import pikepdf
 import pytest
 from pypdf import PdfReader
 
-from pdf_fixtures import (INLINE_LOCATIONS, build_inline_pdf,
-                          count_inline_images, without_file_id)
+from pdf_fixtures import (INLINE_LOCATIONS, RULE_INLINE_IMAGES,
+                          build_inline_pdf, count_inline_images,
+                          without_file_id)
 
 
 def inline_images_in(result):
@@ -100,6 +101,34 @@ def test_type3_glyphs_are_preserved(app, uploaded, tmp_path):
     # ページ本体の1個だけが消え、グリフの1個は残る
     assert result["removed_images"] == 1
     assert inline_images_in(result) == 1
+
+
+@pytest.mark.parametrize("name", RULE_INLINE_IMAGES)
+def test_rules_and_stencils_are_preserved(app, uploaded, tmp_path, name):
+    """罫線や字形を描くインライン画像は、写真ではないので削除しない
+
+    抽出テキストには現れないため、消えても字数の比較では検知できない。
+    """
+    path = build_inline_pdf(tmp_path / "rule.pdf", locations=(),
+                            trailer=RULE_INLINE_IMAGES[name])
+
+    result = app["split_and_process_pdf"](uploaded(path))
+
+    assert result["removed_images"] == 0
+    assert inline_images_in(result) == 1
+
+
+def test_rules_survive_rewriting_the_stream(app, uploaded, tmp_path):
+    """写真を削除してストリームを書き換えても、同じページの罫線は残る"""
+    rules = b"".join(RULE_INLINE_IMAGES.values())
+    path = build_inline_pdf(tmp_path / "mixed.pdf", locations=("page",),
+                            trailer=rules)
+
+    result = app["split_and_process_pdf"](uploaded(path))
+
+    assert result["removed_images"] == 1
+    assert inline_images_in(result) == len(RULE_INLINE_IMAGES)
+    assert extracted_chars(result) == result["total_chars"] > 0
 
 
 @pytest.mark.parametrize("broken", [b"BT (unterminated ", b"<< /a ", b"[ (a) "])
