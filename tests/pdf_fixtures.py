@@ -16,6 +16,8 @@ IMAGE_SIDE = 120
 
 # インライン画像は圧縮が効かない乱数で作り、削除漏れがサイズに出るようにする
 INLINE_SIDE = 60
+# inline_image と build_image_xobject_pdf が画像を描く範囲（PDF座標、左下原点）
+IMAGE_BOX = (100, 100, 200, 200)
 INLINE_LOCATIONS = ("page", "form", "nested_form", "form_without_resources",
                     "soft_mask", "pattern", "annotation")
 
@@ -285,6 +287,40 @@ def build_inline_pdf(path, locations=INLINE_LOCATIONS, pages=1, type3=False,
             page.Annots = annots
         pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
 
+    pdf.save(path)
+    return str(path)
+
+
+def build_image_xobject_pdf(path, width, height, stencil=False, pages=1):
+    """画像XObjectを本文から離れた位置に描くPDFを生成して保存する
+
+    画像は IMAGE_BOX の位置に描き、それ以外の場所に本文を置く。
+    """
+    pdf = pikepdf.Pdf.new()
+    font = pdf.make_indirect(Dictionary(
+        Type=Name.Font, Subtype=Name.Type1, BaseFont=Name.Helvetica,
+        Encoding=Name.WinAnsiEncoding))
+    if stencil:
+        data = bytes(((width + 7) // 8) * height)
+        extra = {"ImageMask": True, "BitsPerComponent": 1}
+    else:
+        data = bytes(random.Random(1).randrange(256)
+                     for _ in range(width * height * 3))
+        extra = {"ColorSpace": Name.DeviceRGB, "BitsPerComponent": 8}
+
+    left, bottom, right, top = IMAGE_BOX
+    content = (b"BT /F1 12 Tf 40 700 Td (Text beside the image) Tj ET\n"
+               + f"q {right - left} 0 0 {top - bottom} {left} {bottom} cm "
+                 "/Im0 Do Q\n".encode())
+    for _ in range(pages):
+        image = pdf.make_stream(data, Type=Name.XObject, Subtype=Name.Image,
+                                Width=width, Height=height, **extra)
+        page = Dictionary(
+            Type=Name.Page, MediaBox=Array([0, 0, 612, 792]),
+            Resources=Dictionary(Font=Dictionary(F1=font),
+                                 XObject=Dictionary(Im0=image)),
+            Contents=pdf.make_stream(content))
+        pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
     pdf.save(path)
     return str(path)
 

@@ -32,7 +32,7 @@ def test_both_expose_the_same_helpers(cli, app):
     """両方に同じ処理関数が存在する"""
     for name in ("strip_images_from_resources", "clean_page",
                  "strip_inline_images", "strip_inline_images_from_page",
-                 "is_removable_inline_image",
+                 "is_removable_inline_image", "is_removable_image_xobject",
                  "count_characters_per_page", "split_and_process_pdf",
                  "check_text_coverage", "TextlessPdfError"):
         assert hasattr(cli, name), f"CLI版に {name} がありません"

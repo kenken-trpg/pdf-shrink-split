@@ -181,6 +181,23 @@ def strip_inline_images_from_page(page):
     return strip_inline_images(contents)
 
 
+# これ以下の画素数のImageMaskは、軸の目盛りや記号として描かれたものとして残す。
+# 大きいものはスキャン由来の文字画像などで、容量も大きいため削除する
+STENCIL_MAX_PIXELS = 100_000
+
+
+def is_removable_image_xobject(xobj):
+    """画像XObjectが、削除してよい画像かどうかを返す
+
+    1画素の画像は塗りつぶしの矩形、小さなImageMaskはグラフの軸の目盛りや
+    記号を描くもので、どちらも写真ではなく図の線の一部なので残す。
+    """
+    pixels = int(xobj.get("/Width", 0)) * int(xobj.get("/Height", 0))
+    if pixels <= 1:
+        return False
+    return not (xobj.get("/ImageMask", False) and pixels <= STENCIL_MAX_PIXELS)
+
+
 def strip_images_from_resources(resources, seen=None):
     """Resources辞書を再帰的に辿って画像を削除し、削除数を返す
 
@@ -210,8 +227,9 @@ def strip_images_from_resources(resources, seen=None):
                 xobj = xobjects[name]
                 subtype = str(xobj.get("/Subtype"))
                 if subtype == "/Image":
-                    del xobjects[name]
-                    removed += 1
+                    if is_removable_image_xobject(xobj):
+                        del xobjects[name]
+                        removed += 1
                 elif subtype == "/Form":
                     removed += strip_inline_images(xobj)
                     removed += strip_images_from_resources(
