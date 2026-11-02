@@ -87,8 +87,13 @@ $ python pdf-shrink-split.py document.pdf
 ```
 
 ## 🌐 Webアプリ版（Streamlit）
-ブラウザから使える版も同梱しています。ファイルをドラッグ＆ドロップし、生成されたPDFを
-個別またはZIPで一括ダウンロードできます。
+ブラウザから使える版も用意しています。インストール不要で、次のURLから試用・使用できます。
+
+**👉 https://pdf-shrink-split-okmzcpunlyn3plwsdi6bvh.streamlit.app/**
+
+ファイルをドラッグ＆ドロップし、生成されたPDFを個別またはZIPで一括ダウンロードできます。
+
+ローカルで起動する場合：
 
 ```bash
 pip install -r requirements.txt
