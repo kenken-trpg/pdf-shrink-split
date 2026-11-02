@@ -178,6 +178,19 @@ def inline_image(seed=0):
             + data.hex().encode() + b">\nEI\nQ\n")
 
 
+# 写真ではなく本文の一部として描かれるインライン画像
+# TeX系のPDFは表の罫線や分数の横棒を、1x1のImageMaskを引き伸ばして描く
+RULE_INLINE_IMAGES = {
+    "one_pixel_stencil": (b"q 200 0 0 1 100 400 cm\n"
+                          b"BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI\nQ\n"),
+    "one_pixel_gray": (b"q 200 0 0 1 100 420 cm\n"
+                       b"BI /W 1 /H 1 /BPC 8 /CS /G ID \x00 EI\nQ\n"),
+    "bitmap_glyph": (b"q 8 0 0 8 100 440 cm\n"
+                     b"BI /W 8 /H 8 /BPC 1 /IM true ID "
+                     + bytes(range(8)) + b" EI\nQ\n"),
+}
+
+
 def _type3_font(pdf):
     """字形をインライン画像で描くType 3フォントを作る"""
     glyph = pdf.make_stream(
