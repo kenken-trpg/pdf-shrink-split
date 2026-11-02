@@ -7,7 +7,7 @@ import io
 
 # 自動インストールで入れるバージョン。スクリプト単体でダウンロードして使う場合は
 # requirements.txt が手元にないため、ここに直接書く（一致はテストで確認している）
-REQUIRED_PACKAGES = {"PyPDF2": "PyPDF2==3.0.1", "pikepdf": "pikepdf==10.16.0"}
+REQUIRED_PACKAGES = {"pypdf": "pypdf==6.21.4", "pikepdf": "pikepdf==10.16.0"}
 
 
 def install_packages():
@@ -34,10 +34,10 @@ install_packages()
 
 import logging
 import warnings
-logging.getLogger("PyPDF2").setLevel(logging.ERROR)
-warnings.filterwarnings("ignore", module="PyPDF2")
+logging.getLogger("pypdf").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", module="pypdf")
 
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 import pikepdf
 from pikepdf import Pdf, ObjectStreamMode
 

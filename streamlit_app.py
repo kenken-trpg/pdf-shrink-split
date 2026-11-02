@@ -2,7 +2,7 @@ import streamlit as st
 import io
 import os
 import zipfile
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 import pikepdf
 from pikepdf import Pdf, ObjectStreamMode
 

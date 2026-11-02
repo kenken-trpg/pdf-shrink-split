@@ -6,7 +6,7 @@
 """
 import pikepdf
 import pytest
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 
 from pdf_fixtures import build_pdf, count_image_streams
 
