@@ -4,6 +4,7 @@
 画像を「入れ子の奥」に置いた検体を作れることが重要で、ここが
 過去に画像削除が機能していなかった原因そのものにあたる。
 """
+import re
 import zlib
 
 import pikepdf
@@ -11,6 +12,17 @@ from pikepdf import Array, Dictionary, Name, Stream
 
 # 画像1枚あたりのバイト数を大きめにして、削除漏れがサイズに出るようにする
 IMAGE_SIDE = 120
+
+
+def without_file_id(data):
+    """PDFのバイト列から /ID を取り除く
+
+    /ID は保存時刻（秒）で変わるため、同じ内容でも保存が秒をまたぐと
+    バイト列が一致しなくなる。内容を比較するときはこれを通す。
+    """
+    masked, count = re.subn(rb"/ID \[<[0-9a-f]+><[0-9a-f]+>\]", b"/ID []", data)
+    assert count == 1, f"/ID が {count} 個見つかりました"
+    return masked
 
 
 def _image(pdf, seed=0):
