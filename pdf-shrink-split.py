@@ -105,12 +105,66 @@ def check_text_coverage(char_counts, force=False):
     return warnings
 
 
+def strip_inline_images(stream):
+    """コンテンツストリームからインライン画像(BI...EI)を削除し、削除数を返す
+
+    解析できないストリームは元のまま残す。pikepdf は壊れたストリームでも例外を
+    出さず、警告だけ出して途中までの命令を返すため、警告が出たものを書き戻すと
+    その後ろの本文まで失われてしまう。
+
+    Type 3 フォントのグリフはインライン画像で字形を描くことがあり、削除すると
+    本文が壊れるため /Font は辿らない。
+    """
+    if not isinstance(stream, pikepdf.Stream):
+        return 0
+
+    try:
+        if b"ID" not in stream.read_bytes():
+            return 0
+
+        with warnings.catch_warnings(record=True) as parse_warnings:
+            warnings.simplefilter("always")
+            instructions = list(pikepdf.parse_content_stream(stream))
+        if parse_warnings:
+            return 0
+
+        kept = [instruction for instruction in instructions
+                if not isinstance(instruction,
+                                  pikepdf.ContentStreamInlineImage)]
+        removed = len(instructions) - len(kept)
+        if removed:
+            stream.write(pikepdf.unparse_content_stream(kept))
+        return removed
+    except Exception:
+        return 0
+
+
+def strip_inline_images_from_page(page):
+    """ページ本体のインライン画像を削除し、削除数を返す"""
+    contents = page.get("/Contents")
+    if contents is None:
+        return 0
+
+    try:
+        # /Contents が配列の場合は、命令が要素をまたぐことがあるため結合する
+        if isinstance(contents, pikepdf.Array):
+            if not any(b"ID" in part.read_bytes() for part in contents):
+                return 0
+            page.contents_coalesce()
+            contents = page.Contents
+    except Exception:
+        return 0
+
+    return strip_inline_images(contents)
+
+
 def strip_images_from_resources(resources, seen=None):
-    """Resources辞書を再帰的に辿って画像XObjectを削除し、削除数を返す
+    """Resources辞書を再帰的に辿って画像を削除し、削除数を返す
 
     画像はページ直下の /Resources/XObject だけでなく、Form XObject の
     入れ子、ソフトマスクグループ(/ExtGState -> /SMask -> /G)、
     パターンの中にも置かれているため再帰的に処理する必要がある。
+    それぞれのストリームに直接書かれたインライン画像も合わせて削除する。
     """
     if resources is None:
         return 0
@@ -136,6 +190,7 @@ def strip_images_from_resources(resources, seen=None):
                     del xobjects[name]
                     removed += 1
                 elif subtype == "/Form":
+                    removed += strip_inline_images(xobj)
                     removed += strip_images_from_resources(
                         xobj.get("/Resources"), seen)
             except Exception:
@@ -151,6 +206,7 @@ def strip_images_from_resources(resources, seen=None):
                     continue
                 group = smask.get("/G")
                 if group is not None:
+                    removed += strip_inline_images(group)
                     removed += strip_images_from_resources(
                         group.get("/Resources"), seen)
             except Exception:
@@ -160,8 +216,10 @@ def strip_images_from_resources(resources, seen=None):
     if patterns is not None:
         for name in list(patterns.keys()):
             try:
+                pattern = patterns[name]
+                removed += strip_inline_images(pattern)
                 removed += strip_images_from_resources(
-                    patterns[name].get("/Resources"), seen)
+                    pattern.get("/Resources"), seen)
             except Exception:
                 pass
 
@@ -177,7 +235,8 @@ PAGE_CRUFT_KEYS = ("/PieceInfo", "/Thumb", "/Metadata", "/B", "/StructParents")
 
 def clean_page(page):
     """1ページから画像と不要なメタデータを削除し、削除した画像数を返す"""
-    removed = strip_images_from_resources(page.get("/Resources"))
+    removed = strip_inline_images_from_page(page)
+    removed += strip_images_from_resources(page.get("/Resources"))
 
     annots = page.get("/Annots")
     if annots is not None:
@@ -189,6 +248,7 @@ def clean_page(page):
                 for state in list(appearance.keys()):
                     stream = appearance[state]
                     if isinstance(stream, pikepdf.Stream):
+                        removed += strip_inline_images(stream)
                         removed += strip_images_from_resources(
                             stream.get("/Resources"))
             except Exception:

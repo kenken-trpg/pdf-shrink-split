@@ -4,6 +4,7 @@
 画像を「入れ子の奥」に置いた検体を作れることが重要で、ここが
 過去に画像削除が機能していなかった原因そのものにあたる。
 """
+import random
 import re
 import zlib
 
@@ -12,6 +13,11 @@ from pikepdf import Array, Dictionary, Name, Stream
 
 # 画像1枚あたりのバイト数を大きめにして、削除漏れがサイズに出るようにする
 IMAGE_SIDE = 120
+
+# インライン画像は圧縮が効かない乱数で作り、削除漏れがサイズに出るようにする
+INLINE_SIDE = 60
+INLINE_LOCATIONS = ("page", "form", "nested_form", "form_without_resources",
+                    "soft_mask", "pattern", "annotation")
 
 
 def without_file_id(data):
@@ -160,6 +166,134 @@ def build_pdf(path, pages=1, text_per_page="Hello PDF shrink split. ",
 
     pdf.save(path)
     return str(path)
+
+
+def inline_image(seed=0):
+    """インライン画像(BI...EI)を描画するコンテンツを作る"""
+    rng = random.Random(seed)
+    data = bytes(rng.randrange(256) for _ in range(INLINE_SIDE ** 2 * 3))
+    return (b"q 100 0 0 100 100 100 cm\n"
+            + (f"BI /W {INLINE_SIDE} /H {INLINE_SIDE} /BPC 8 /CS /RGB "
+               "/F /AHx ID\n").encode()
+            + data.hex().encode() + b">\nEI\nQ\n")
+
+
+def _type3_font(pdf):
+    """字形をインライン画像で描くType 3フォントを作る"""
+    glyph = pdf.make_stream(
+        b"8 0 0 0 8 8 d1 8 0 0 8 0 0 cm "
+        b"BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI\n")
+    return pdf.make_indirect(Dictionary(
+        Type=Name.Font, Subtype=Name.Type3, FontBBox=Array([0, 0, 8, 8]),
+        FontMatrix=Array([1, 0, 0, 1, 0, 0]),
+        CharProcs=Dictionary(a=glyph),
+        Encoding=Dictionary(Type=Name.Encoding, Differences=Array([97, Name.a])),
+        FirstChar=97, LastChar=97, Widths=Array([8])))
+
+
+def build_inline_pdf(path, locations=INLINE_LOCATIONS, pages=1, type3=False,
+                     shared_form=False, split_contents=False, trailer=b""):
+    """インライン画像を指定した場所に置いた検証用PDFを生成して保存する
+
+    locations には INLINE_LOCATIONS の要素を指定する。本文にはあえて
+    インライン画像の演算子と同じ文字列を含め、誤検知しないことも確かめる。
+    trailer を指定すると、ページのコンテンツの末尾に追加する。
+    """
+    pdf = pikepdf.Pdf.new()
+    font = pdf.make_indirect(Dictionary(
+        Type=Name.Font, Subtype=Name.Type1, BaseFont=Name.Helvetica,
+        Encoding=Name.WinAnsiEncoding))
+    shared = (_form(pdf, Dictionary(), content=inline_image(1))
+              if shared_form else None)
+
+    for page_num in range(pages):
+        seed = (page_num + 1) * 10
+        text = b"BT /F1 12 Tf 40 700 Td (ID and BI and EI) Tj ET\n"
+        body = b""
+        resources = Dictionary(Font=Dictionary(F1=font))
+        xobjects = Dictionary()
+        annots = Array()
+
+        if "page" in locations:
+            body += inline_image(seed)
+        if "form" in locations:
+            xobjects.Fm0 = shared if shared is not None else _form(
+                pdf, Dictionary(), content=inline_image(seed + 1))
+            body += b"/Fm0 Do\n"
+        if "nested_form" in locations:
+            inner = _form(pdf, Dictionary(), content=inline_image(seed + 2))
+            xobjects.Fm1 = _form(pdf, Dictionary(XObject=Dictionary(Fm0=inner)),
+                                 content=b"/Fm0 Do\n")
+            body += b"/Fm1 Do\n"
+        if "form_without_resources" in locations:
+            xobjects.Fm2 = pdf.make_stream(
+                inline_image(seed + 3), Type=Name.XObject, Subtype=Name.Form,
+                BBox=Array([0, 0, 100, 100]))
+            body += b"/Fm2 Do\n"
+        if "soft_mask" in locations:
+            group = _form(pdf, Dictionary(), content=inline_image(seed + 4))
+            group.Group = Dictionary(S=Name.Transparency, Type=Name.Group)
+            resources.ExtGState = Dictionary(GS0=Dictionary(
+                Type=Name.ExtGState,
+                SMask=Dictionary(S=Name.Luminosity, G=group)))
+            body += b"q /GS0 gs Q\n"
+        if "pattern" in locations:
+            pattern = _form(pdf, Dictionary(), content=inline_image(seed + 5))
+            pattern.PatternType = 1
+            pattern.PaintType = 1
+            pattern.TilingType = 1
+            pattern.XStep = 10
+            pattern.YStep = 10
+            resources.Pattern = Dictionary(P0=pattern)
+            body += b"q /Pattern cs /P0 scn 0 0 10 10 re f Q\n"
+        if "annotation" in locations:
+            appearance = _form(pdf, Dictionary(), content=inline_image(seed + 6))
+            annots.append(pdf.make_indirect(Dictionary(
+                Type=Name.Annot, Subtype=Name.Square,
+                Rect=Array([0, 0, 10, 10]), AP=Dictionary(N=appearance))))
+        if type3:
+            resources.Font.T3 = _type3_font(pdf)
+            body += b"BT /T3 8 Tf 40 600 Td (a) Tj ET\n"
+
+        if len(xobjects.keys()):
+            resources.XObject = xobjects
+
+        if split_contents:
+            # 命令の途中ではなく q と Q の間で /Contents を分ける
+            contents = Array([pdf.make_stream(text + b"q "),
+                              pdf.make_stream(b"Q\n" + body + trailer)])
+        else:
+            contents = pdf.make_stream(text + body + trailer)
+
+        page = Dictionary(
+            Type=Name.Page, MediaBox=Array([0, 0, 612, 792]),
+            Resources=resources, Contents=contents)
+        if len(annots):
+            page.Annots = annots
+        pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+
+    pdf.save(path)
+    return str(path)
+
+
+def count_inline_images(path_or_pdf):
+    """PDF内の全ストリームに残っているインライン画像の数を数える"""
+    def _count(pdf):
+        total = 0
+        for obj in pdf.objects:
+            # オブジェクトストリームなどコンテンツでないものは解析しない
+            if (isinstance(obj, Stream)
+                    and str(obj.get("/Subtype")) != "/Image"
+                    and str(obj.get("/Type")) not in ("/ObjStm", "/XRef")):
+                total += sum(
+                    isinstance(instruction, pikepdf.ContentStreamInlineImage)
+                    for instruction in pikepdf.parse_content_stream(obj))
+        return total
+
+    if isinstance(path_or_pdf, pikepdf.Pdf):
+        return _count(path_or_pdf)
+    with pikepdf.open(path_or_pdf) as pdf:
+        return _count(pdf)
 
 
 def count_image_streams(path_or_pdf):
