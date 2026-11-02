@@ -4,20 +4,31 @@ import os
 import io
 
 # --- 依存パッケージの自動インストール ---
+
+# 自動インストールで入れるバージョン。スクリプト単体でダウンロードして使う場合は
+# requirements.txt が手元にないため、ここに直接書く（一致はテストで確認している）
+REQUIRED_PACKAGES = {"PyPDF2": "PyPDF2==3.0.1", "pikepdf": "pikepdf==10.16.0"}
+
+
 def install_packages():
     """必要なパッケージがなければ自動でインストールする"""
-    required = {"PyPDF2": "PyPDF2", "pikepdf": "pikepdf"}
-    for import_name, pip_name in required.items():
+    for import_name, pip_spec in REQUIRED_PACKAGES.items():
         try:
             __import__(import_name)
         except ImportError:
-            print(f"📦 {pip_name} をインストールしています...")
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", pip_name],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            print(f"✓ {pip_name} のインストールが完了しました。")
+            print(f"📦 {pip_spec} をインストールしています...")
+            try:
+                subprocess.check_call(
+                    [sys.executable, "-m", "pip", "install", pip_spec],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except subprocess.CalledProcessError:
+                print(f"❌ {pip_spec} をインストールできませんでした。")
+                print("Python 3.11以上を使っているか、"
+                      "インターネットに接続できるかを確認してください。")
+                sys.exit(1)
+            print(f"✓ {pip_spec} のインストールが完了しました。")
 
 install_packages()
 
@@ -289,9 +300,11 @@ if __name__ == "__main__":
         idx = args.index("--char-limit")
         try:
             char_limit = int(args[idx + 1])
+            if char_limit < 1:
+                raise ValueError(char_limit)
             args = args[:idx] + args[idx + 2:]
         except (IndexError, ValueError):
-            print("エラー: --char-limit には数値を指定してください。")
+            print("エラー: --char-limit には1以上の整数を指定してください。")
             print("使用法: python pdf-shrink-split.py 入力.pdf [--char-limit 100000] [--force]")
             sys.exit(1)
 
