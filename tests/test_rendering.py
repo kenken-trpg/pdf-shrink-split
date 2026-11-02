@@ -134,8 +134,8 @@ def test_removing_xobject_photo_changes_only_its_area(app, uploaded, tmp_path):
     assert_only_image_area_changed(path, result)
 
 
-def test_stencil_at_the_size_limit_is_kept(app, uploaded, tmp_path):
-    side = int(app["STENCIL_MAX_PIXELS"] ** 0.5)
+def test_stencil_at_the_size_limit_is_kept(cli, app, uploaded, tmp_path):
+    side = int(cli.STENCIL_MAX_PIXELS ** 0.5)
     path = build_image_xobject_pdf(tmp_path / "edge.pdf", side, side, True)
 
     result = app["split_and_process_pdf"](uploaded(path))
