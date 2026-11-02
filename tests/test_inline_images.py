@@ -154,7 +154,7 @@ def test_broken_stream_is_left_untouched(app, uploaded, tmp_path, broken):
     assert b"(After)" in page_content(result["files"][0])
 
 
-def test_broken_streams_are_safe_under_concurrency(app, tmp_path):
+def test_broken_streams_are_safe_under_concurrency(cli, tmp_path):
     """Web版の同時処理でも、壊れたストリームの本文を失わない"""
     after = b"BT /F1 12 Tf 40 500 Td (After) Tj ET\n"
     streams = []
@@ -166,7 +166,7 @@ def test_broken_streams_are_safe_under_concurrency(app, tmp_path):
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         removed = list(pool.map(
-            lambda item: app["strip_inline_images"](item[1]), streams))
+            lambda item: cli.strip_inline_images(item[1]), streams))
 
     assert removed == [0] * len(streams)
     for pdf, stream in streams:
@@ -207,9 +207,9 @@ def test_processing_output_again_finds_nothing(app, uploaded, tmp_path):
     assert second["removed_images"] == 0
 
 
-def test_non_stream_pattern_is_ignored(app):
+def test_non_stream_pattern_is_ignored(cli):
     """シェーディングパターンのようにストリームでないものは対象外"""
-    assert app["strip_inline_images"](pikepdf.Dictionary()) == 0
+    assert cli.strip_inline_images(pikepdf.Dictionary()) == 0
 
 
 def test_same_bytes_as_cli(cli, app, uploaded, tmp_path):

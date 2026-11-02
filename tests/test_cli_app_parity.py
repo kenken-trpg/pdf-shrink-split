@@ -1,10 +1,11 @@
 """CLI版とStreamlit版が同じ結果を出すことのテスト
 
-同じ処理ロジックが2ファイルに重複して存在するため、
-片方だけ直して食い違う事故を検知する。
+処理の本体はCLI版にあり、Web版はそれを読み込んで使う。入出力の扱いは
+それぞれ別に書いているため、結果が食い違わないことを確かめる。
 """
 import os
 
+from conftest import APP_PATH
 from pdf_fixtures import build_pdf, without_file_id
 
 
@@ -28,12 +29,13 @@ def test_same_bytes_as_cli(cli, app, uploaded, tmp_path):
             f"{app_file['name']} の内容がCLI版とStreamlit版で一致しません")
 
 
-def test_both_expose_the_same_helpers(cli, app):
-    """両方に同じ処理関数が存在する"""
-    for name in ("strip_images_from_resources", "clean_page",
-                 "strip_inline_images", "strip_inline_images_from_page",
-                 "is_removable_inline_image", "is_removable_image_xobject",
-                 "count_characters_per_page", "split_and_process_pdf",
-                 "check_text_coverage", "TextlessPdfError"):
+def test_app_does_not_duplicate_processing(cli):
+    """Web版に処理の定義を置かず、CLI版の1か所だけで管理する"""
+    source = open(APP_PATH, encoding="utf-8").read()
+    for name in ("strip_images_from_resources", "strip_inline_images",
+                 "clean_page", "count_characters_per_page",
+                 "check_text_coverage", "group_pages_by_chars",
+                 "write_cleaned_pdf"):
         assert hasattr(cli, name), f"CLI版に {name} がありません"
-        assert name in app, f"Streamlit版に {name} がありません"
+        assert f"def {name}(" not in source, (
+            f"Web版に {name} の定義が重複しています")

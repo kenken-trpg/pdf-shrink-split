@@ -30,7 +30,10 @@ def install_packages():
                 sys.exit(1)
             print(f"✓ {pip_spec} のインストールが完了しました。")
 
-install_packages()
+
+# Web版は処理の本体としてこのファイルを読み込むため、直接実行したときだけ導入する
+if __name__ == "__main__":
+    install_packages()
 
 import logging
 import warnings
@@ -67,6 +70,48 @@ def make_output_paths(input_path, num_parts):
     if num_parts == 1:
         return [f"{base}_no_images{ext}"]
     return [f"{base}_part{i+1}{ext}" for i in range(num_parts)]
+
+
+def group_pages_by_chars(char_counts, char_limit):
+    """字数の累計が制限を超えないよう、ページ番号をグループに分ける
+
+    分割はページ単位なので、1ページで制限を超えるページは単独のグループになる。
+    """
+    groups = []
+    current_group = []
+    current_chars = 0
+
+    for i, count in enumerate(char_counts):
+        if current_group and current_chars + count > char_limit:
+            groups.append(current_group)
+            current_group = []
+            current_chars = 0
+        current_group.append(i)
+        current_chars += count
+
+    if current_group:
+        groups.append(current_group)
+    return groups
+
+
+# 字数制限を超えるページのうち、警告に書き出す数
+MAX_LISTED_PAGES = 5
+
+
+def check_page_limit(char_counts, char_limit):
+    """1ページで字数制限を超えるページがあれば、警告文のリストを返す"""
+    oversized = [(number, count)
+                 for number, count in enumerate(char_counts, start=1)
+                 if count > char_limit]
+    if not oversized:
+        return []
+
+    listed = "、".join(f"{number}ページ目（{count:,}字）"
+                      for number, count in oversized[:MAX_LISTED_PAGES])
+    if len(oversized) > MAX_LISTED_PAGES:
+        listed += f" ほか{len(oversized) - MAX_LISTED_PAGES}ページ"
+    return [f"1ページで字数制限（{char_limit:,}字）を超えるページがあります: {listed}。"
+            "分割はページ単位のため、これらのページを含むファイルは字数制限を超えます。"]
 
 
 # テキストを持たないPDF（スキャンした画像のみのPDFなど）は、画像を削除すると
@@ -302,8 +347,11 @@ def clean_page(page):
     return removed
 
 
-def write_cleaned_pdf(source_pdf, page_indices, output_path):
-    """指定ページを抜き出し、画像を削除・圧縮して保存する"""
+def write_cleaned_pdf(source_pdf, page_indices, output):
+    """指定ページを抜き出し、画像を削除・圧縮して保存する
+
+    output はパスか、書き込み可能なファイルオブジェクト。
+    """
     out_pdf = Pdf.new()
     for page_num in page_indices:
         out_pdf.pages.append(source_pdf.pages[page_num])
@@ -315,7 +363,7 @@ def write_cleaned_pdf(source_pdf, page_indices, output_path):
     out_pdf.remove_unreferenced_resources()
 
     out_pdf.save(
-        output_path,
+        output,
         compress_streams=True,
         recompress_flate=True,
         object_stream_mode=ObjectStreamMode.generate,
@@ -338,24 +386,13 @@ def split_and_process_pdf(input_path, char_limit=100000, force=False):
     print(f"字数制限: {char_limit:,}")
     print(f"------------------------")
 
-    for warning in check_text_coverage(char_counts, force):
+    warning_messages = check_text_coverage(char_counts, force)
+    warning_messages += check_page_limit(char_counts, char_limit)
+    for warning in warning_messages:
         print(f"⚠️  {warning}")
 
     # ページを分割グループに振り分け
-    groups = []
-    current_group = []
-    current_chars = 0
-
-    for i, count in enumerate(char_counts):
-        if current_group and current_chars + count > char_limit:
-            groups.append(current_group)
-            current_group = []
-            current_chars = 0
-        current_group.append(i)
-        current_chars += count
-
-    if current_group:
-        groups.append(current_group)
+    groups = group_pages_by_chars(char_counts, char_limit)
 
     # 出力ファイル名を生成
     output_paths = make_output_paths(input_path, len(groups))

@@ -33,14 +33,14 @@ def cli():
 
 @pytest.fixture(scope="session")
 def app():
-    """streamlit_app.py の処理関数部分だけを読み込む"""
+    """streamlit_app.py のUIより前の部分だけを読み込む"""
     source = open(APP_PATH, encoding="utf-8").read()
     assert UI_MARKER in source, (
         f"{APP_PATH} に {UI_MARKER!r} が見つかりません。"
         "処理部分とUI部分の境界が変わった場合はこのテストを更新してください。")
     head = source.split(UI_MARKER)[0]
 
-    namespace = {"__name__": "streamlit_app_core"}
+    namespace = {"__name__": "streamlit_app_core", "__file__": APP_PATH}
     exec(compile(head, APP_PATH, "exec"), namespace)
     return namespace
 

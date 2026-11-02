@@ -1,13 +1,10 @@
-import streamlit as st
+import importlib.util
 import io
 import os
-import warnings
+import sys
 import zipfile
-from pypdf import PdfReader
-import pikepdf
-from pikepdf import Pdf, ObjectStreamMode
 
-warnings.filterwarnings("ignore", message="Unexpected end of stream")
+import streamlit as st
 
 st.set_page_config(
     page_title="PDF Shrink & Split",
@@ -16,271 +13,26 @@ st.set_page_config(
 )
 
 
-def count_characters_per_page(reader):
-    """各ページのテキスト字数リストを返す"""
-    char_counts = []
-    for page in reader.pages:
-        try:
-            text = page.extract_text() or ""
-        except Exception:
-            text = ""
-        char_counts.append(len(text))
-    return char_counts
+def load_core():
+    """CLI版のスクリプトを処理の本体として読み込む
 
-
-# テキストを持たないPDF（スキャンした画像のみのPDFなど）は、画像を削除すると
-# 内容そのものが失われる。意図せず空のPDFを作らないための安全弁。
-TEXTLESS_WARNING_RATIO = 0.5
-
-
-class TextlessPdfError(Exception):
-    """抽出できるテキストが1字もないPDFを処理しようとした"""
-
-    def __init__(self, total_pages):
-        self.total_pages = total_pages
-        super().__init__(
-            f"このPDFからはテキストを抽出できません（{total_pages}ページすべて0字）。"
-            "スキャンした画像のみのPDFの可能性が高く、"
-            "画像を削除すると内容が失われます。")
-
-
-def check_text_coverage(char_counts, force=False):
-    """テキストの有無を調べ、警告文のリストを返す
-
-    1字も抽出できない場合は TextlessPdfError を投げる（force=Trueなら続行）。
-    一部のページだけテキストがない場合は警告だけ返して処理は続ける。
+    CLI版はファイル1つで配布するためパッケージに分けられず、ファイル名に
+    ハイフンを含むので通常の import もできない。Streamlit は操作のたびに
+    このスクリプトを再実行するため、読み込むのは最初の1回だけにする。
     """
-    total_pages = len(char_counts)
-    empty_pages = sum(1 for count in char_counts if count == 0)
-
-    if total_pages and sum(char_counts) == 0 and not force:
-        raise TextlessPdfError(total_pages)
-
-    warnings = []
-    if empty_pages and empty_pages >= total_pages * TEXTLESS_WARNING_RATIO:
-        warnings.append(
-            f"{total_pages}ページ中{empty_pages}ページからテキストを"
-            "抽出できませんでした。スキャン画像のページである可能性があり、"
-            "画像を削除すると内容が失われます。")
-    return warnings
+    name = "pdf_shrink_split_core"
+    if name not in sys.modules:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "pdf-shrink-split.py")
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules[name] = module
+    return sys.modules[name]
 
 
-# インライン画像の解析が最後まで届いたことを確かめるための命令
-PARSE_SENTINEL = b"__pdf_shrink_split_end__"
-
-
-def is_removable_inline_image(instruction):
-    """コンテンツの命令が、削除してよいインライン画像かどうかを返す
-
-    ImageMask は現在の色で塗るステンシルで、ビットマップの字形などに使われる。
-    1画素の画像は実質的に塗りつぶしの矩形で、TeX系のPDFは表の罫線や分数の
-    横棒をこれを引き伸ばして描く。どちらも写真ではなく本文の一部なので残す。
-    """
-    if not isinstance(instruction, pikepdf.ContentStreamInlineImage):
-        return False
-    image = instruction.iimage
-    return not image.image_mask and image.width * image.height > 1
-
-
-def strip_inline_images(stream):
-    """コンテンツストリームからインライン画像(BI...EI)を削除し、削除数を返す
-
-    解析できないストリームは元のまま残す。pikepdf は壊れたストリームでも例外を
-    出さず、警告だけ出して途中までの命令を返すため、そのまま書き戻すと後ろの
-    本文まで失われてしまう。警告の捕捉はスレッドセーフでなくWeb版の同時処理で
-    取りこぼすため、末尾に足した番兵の命令まで読めたかどうかで判定する。
-
-    Type 3 フォントのグリフはインライン画像で字形を描くことがあり、削除すると
-    本文が壊れるため /Font は辿らない。同じ理由で、罫線や字形を描くための
-    インライン画像も残す（is_removable_inline_image を参照）。
-    """
-    if not isinstance(stream, pikepdf.Stream):
-        return 0
-
-    try:
-        data = stream.read_bytes()
-        if b"ID" not in data:
-            return 0
-
-        # 番兵の命令まで読めなければ、途中で解析が止まっている
-        probe_pdf = Pdf.new()
-        probe = probe_pdf.make_stream(data + b"\n" + PARSE_SENTINEL + b"\n")
-        instructions = list(pikepdf.parse_content_stream(probe))
-        if (not instructions
-                or str(instructions[-1].operator) != PARSE_SENTINEL.decode()):
-            return 0
-        instructions.pop()
-
-        kept = [instruction for instruction in instructions
-                if not is_removable_inline_image(instruction)]
-        removed = len(instructions) - len(kept)
-        if removed:
-            stream.write(pikepdf.unparse_content_stream(kept))
-        return removed
-    except Exception:
-        return 0
-
-
-def strip_inline_images_from_page(page):
-    """ページ本体のインライン画像を削除し、削除数を返す"""
-    contents = page.get("/Contents")
-    if contents is None:
-        return 0
-
-    try:
-        # /Contents が配列の場合は、命令が要素をまたぐことがあるため結合する
-        if isinstance(contents, pikepdf.Array):
-            if not any(b"ID" in part.read_bytes() for part in contents):
-                return 0
-            page.contents_coalesce()
-            contents = page.Contents
-    except Exception:
-        return 0
-
-    return strip_inline_images(contents)
-
-
-# これ以下の画素数のImageMaskは、軸の目盛りや記号として描かれたものとして残す。
-# 大きいものはスキャン由来の文字画像などで、容量も大きいため削除する
-STENCIL_MAX_PIXELS = 100_000
-
-
-def is_removable_image_xobject(xobj):
-    """画像XObjectが、削除してよい画像かどうかを返す
-
-    1画素の画像は塗りつぶしの矩形、小さなImageMaskはグラフの軸の目盛りや
-    記号を描くもので、どちらも写真ではなく図の線の一部なので残す。
-    """
-    pixels = int(xobj.get("/Width", 0)) * int(xobj.get("/Height", 0))
-    if pixels <= 1:
-        return False
-    return not (xobj.get("/ImageMask", False) and pixels <= STENCIL_MAX_PIXELS)
-
-
-def strip_images_from_resources(resources, seen=None):
-    """Resources辞書を再帰的に辿って画像を削除し、削除数を返す
-
-    画像はページ直下の /Resources/XObject だけでなく、Form XObject の
-    入れ子、ソフトマスクグループ(/ExtGState -> /SMask -> /G)、
-    パターンの中にも置かれているため再帰的に処理する必要がある。
-    それぞれのストリームに直接書かれたインライン画像も合わせて削除する。
-    """
-    if resources is None:
-        return 0
-
-    if seen is None:
-        seen = set()
-    objgen = getattr(resources, "objgen", (0, 0))
-    if objgen != (0, 0):
-        # 循環参照・共有リソースの二重処理を防ぐ
-        if objgen in seen:
-            return 0
-        seen.add(objgen)
-
-    removed = 0
-
-    xobjects = resources.get("/XObject")
-    if xobjects is not None:
-        for name in list(xobjects.keys()):
-            try:
-                xobj = xobjects[name]
-                subtype = str(xobj.get("/Subtype"))
-                if subtype == "/Image":
-                    if is_removable_image_xobject(xobj):
-                        del xobjects[name]
-                        removed += 1
-                elif subtype == "/Form":
-                    removed += strip_inline_images(xobj)
-                    removed += strip_images_from_resources(
-                        xobj.get("/Resources"), seen)
-            except Exception:
-                pass
-
-    ext_gstates = resources.get("/ExtGState")
-    if ext_gstates is not None:
-        for name in list(ext_gstates.keys()):
-            try:
-                smask = ext_gstates[name].get("/SMask")
-                # /SMask は /None という名前オブジェクトの場合もある
-                if smask is None or isinstance(smask, pikepdf.Name):
-                    continue
-                group = smask.get("/G")
-                if group is not None:
-                    removed += strip_inline_images(group)
-                    removed += strip_images_from_resources(
-                        group.get("/Resources"), seen)
-            except Exception:
-                pass
-
-    patterns = resources.get("/Pattern")
-    if patterns is not None:
-        for name in list(patterns.keys()):
-            try:
-                pattern = patterns[name]
-                removed += strip_inline_images(pattern)
-                removed += strip_images_from_resources(
-                    pattern.get("/Resources"), seen)
-            except Exception:
-                pass
-
-    return removed
-
-
-# ページから削除しても本文テキストに影響しないエントリ
-# /PieceInfo には Photoshop/Illustrator が元画像の複製を丸ごと残すことがある
-# 出力は Pdf.new() の新規文書にページを追加して作るため、文書レベルの
-# /Metadata や /StructTreeRoot は最初から引き継がれない（削除処理は不要）
-PAGE_CRUFT_KEYS = ("/PieceInfo", "/Thumb", "/Metadata", "/B", "/StructParents")
-
-
-def clean_page(page):
-    """1ページから画像と不要なメタデータを削除し、削除した画像数を返す"""
-    removed = strip_inline_images_from_page(page)
-    removed += strip_images_from_resources(page.get("/Resources"))
-
-    annots = page.get("/Annots")
-    if annots is not None:
-        for annot in annots:
-            try:
-                appearance = annot.get("/AP")
-                if appearance is None:
-                    continue
-                for state in list(appearance.keys()):
-                    stream = appearance[state]
-                    if isinstance(stream, pikepdf.Stream):
-                        removed += strip_inline_images(stream)
-                        removed += strip_images_from_resources(
-                            stream.get("/Resources"))
-            except Exception:
-                pass
-
-    for key in PAGE_CRUFT_KEYS:
-        if key in page:
-            del page[key]
-
-    return removed
-
-
-def build_pdf_bytes(source_pdf, page_indices):
-    """指定ページを抜き出し、画像を削除・圧縮したバイト列を返す"""
-    out_pdf = Pdf.new()
-    for page_num in page_indices:
-        out_pdf.pages.append(source_pdf.pages[page_num])
-
-    removed_images = 0
-    for page in out_pdf.pages:
-        removed_images += clean_page(page)
-
-    out_pdf.remove_unreferenced_resources()
-
-    buf = io.BytesIO()
-    out_pdf.save(
-        buf,
-        compress_streams=True,
-        recompress_flate=True,
-        object_stream_mode=ObjectStreamMode.generate,
-    )
-    return buf.getvalue(), removed_images
+core = load_core()
+TextlessPdfError = core.TextlessPdfError
 
 
 def format_size_change(reduction):
@@ -292,36 +44,22 @@ def split_and_process_pdf(uploaded_file, char_limit=100000, force=False):
     """PDFから画像を削除し、字数制限で分割してバイト列のリストを返す"""
     pdf_data = uploaded_file.getvalue()
 
-    reader = PdfReader(io.BytesIO(pdf_data))
-    char_counts = count_characters_per_page(reader)
-    total_pages = len(char_counts)
-    total_chars = sum(char_counts)
+    reader = core.PdfReader(io.BytesIO(pdf_data))
+    char_counts = core.count_characters_per_page(reader)
 
-    text_warnings = check_text_coverage(char_counts, force)
+    warnings = core.check_text_coverage(char_counts, force)
+    warnings += core.check_page_limit(char_counts, char_limit)
 
-    groups = []
-    current_group = []
-    current_chars = 0
-
-    for i, count in enumerate(char_counts):
-        if current_group and current_chars + count > char_limit:
-            groups.append(current_group)
-            current_group = []
-            current_chars = 0
-        current_group.append(i)
-        current_chars += count
-
-    if current_group:
-        groups.append(current_group)
+    groups = core.group_pages_by_chars(char_counts, char_limit)
 
     output_files = []
     removed_images = 0
     base_name = os.path.splitext(uploaded_file.name)[0]
 
-    with Pdf.open(io.BytesIO(pdf_data)) as source_pdf:
+    with core.Pdf.open(io.BytesIO(pdf_data)) as source_pdf:
         for idx, group in enumerate(groups):
-            pdf_bytes, removed = build_pdf_bytes(source_pdf, group)
-            removed_images += removed
+            buffer = io.BytesIO()
+            removed_images += core.write_cleaned_pdf(source_pdf, group, buffer)
 
             if len(groups) == 1:
                 file_name = f"{base_name}_no_images.pdf"
@@ -330,19 +68,19 @@ def split_and_process_pdf(uploaded_file, char_limit=100000, force=False):
 
             output_files.append({
                 "name": file_name,
-                "bytes": pdf_bytes,
+                "bytes": buffer.getvalue(),
                 "pages": len(group),
                 "chars": sum(char_counts[p] for p in group)
             })
 
     return {
-        "total_pages": total_pages,
-        "total_chars": total_chars,
+        "total_pages": len(char_counts),
+        "total_chars": sum(char_counts),
         "char_limit": char_limit,
         "original_size": len(pdf_data),
         "output_size": sum(len(f["bytes"]) for f in output_files),
         "removed_images": removed_images,
-        "warnings": text_warnings,
+        "warnings": warnings,
         "files": output_files
     }
 

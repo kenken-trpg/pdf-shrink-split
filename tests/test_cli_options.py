@@ -1,4 +1,5 @@
 """CLIの引数検証と、依存の自動インストールのテスト"""
+import importlib.util
 import os
 import subprocess
 import sys
@@ -62,6 +63,24 @@ def test_auto_install_pins_match_requirements(cli):
         assert pinned.get(name) == pip_spec, (
             f"{pip_spec} が requirements.txt の {pinned.get(name)} と"
             "一致していません")
+
+
+def test_importing_the_script_does_not_install(tmp_path, monkeypatch):
+    """Web版が読み込むだけでは、自動インストールを実行しない"""
+    source = open(CLI_PATH, encoding="utf-8").read()
+    pins = 'REQUIRED_PACKAGES = {"pypdf"'
+    assert pins in source
+    script = tmp_path / "script.py"
+    script.write_text(source.replace(
+        pins, 'REQUIRED_PACKAGES = {"no_such_module_for_test": "x==1", "pypdf"'),
+        encoding="utf-8")
+
+    def fail(command, **kwargs):
+        pytest.fail(f"インストールが実行されました: {command}")
+
+    monkeypatch.setattr(subprocess, "check_call", fail)
+    spec = importlib.util.spec_from_file_location("import_only", script)
+    spec.loader.exec_module(importlib.util.module_from_spec(spec))
 
 
 def test_install_failure_explains_what_to_check(cli, monkeypatch, capsys):

@@ -59,16 +59,16 @@ def test_mostly_text_pdf_has_no_warning(app, uploaded, tmp_path):
     assert result["warnings"] == []
 
 
-def test_check_text_coverage_thresholds(app):
+def test_check_text_coverage_thresholds(cli):
     """しきい値の境界を直接確認する"""
-    check = app["check_text_coverage"]
+    check = cli.check_text_coverage
 
     # ちょうど半分 -> 警告する
     assert check([0, 0, 10, 10])
     # 半分未満 -> 警告しない
     assert check([0, 10, 10, 10]) == []
     # テキストが全くない -> 例外
-    with pytest.raises(app["TextlessPdfError"]):
+    with pytest.raises(cli.TextlessPdfError):
         check([0, 0, 0])
     # force指定時は例外にならず警告だけ返る
     assert check([0, 0, 0], force=True)
