@@ -36,6 +36,7 @@ import logging
 import warnings
 logging.getLogger("pypdf").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore", module="pypdf")
+warnings.filterwarnings("ignore", message="Unexpected end of stream")
 
 from pypdf import PdfReader
 import pikepdf
@@ -105,6 +106,10 @@ def check_text_coverage(char_counts, force=False):
     return warnings
 
 
+# インライン画像の解析が最後まで届いたことを確かめるための命令
+PARSE_SENTINEL = b"__pdf_shrink_split_end__"
+
+
 def is_removable_inline_image(instruction):
     """コンテンツの命令が、削除してよいインライン画像かどうかを返す
 
@@ -122,8 +127,9 @@ def strip_inline_images(stream):
     """コンテンツストリームからインライン画像(BI...EI)を削除し、削除数を返す
 
     解析できないストリームは元のまま残す。pikepdf は壊れたストリームでも例外を
-    出さず、警告だけ出して途中までの命令を返すため、警告が出たものを書き戻すと
-    その後ろの本文まで失われてしまう。
+    出さず、警告だけ出して途中までの命令を返すため、そのまま書き戻すと後ろの
+    本文まで失われてしまう。警告の捕捉はスレッドセーフでなくWeb版の同時処理で
+    取りこぼすため、末尾に足した番兵の命令まで読めたかどうかで判定する。
 
     Type 3 フォントのグリフはインライン画像で字形を描くことがあり、削除すると
     本文が壊れるため /Font は辿らない。同じ理由で、罫線や字形を描くための
@@ -133,14 +139,18 @@ def strip_inline_images(stream):
         return 0
 
     try:
-        if b"ID" not in stream.read_bytes():
+        data = stream.read_bytes()
+        if b"ID" not in data:
             return 0
 
-        with warnings.catch_warnings(record=True) as parse_warnings:
-            warnings.simplefilter("always")
-            instructions = list(pikepdf.parse_content_stream(stream))
-        if parse_warnings:
+        # 番兵の命令まで読めなければ、途中で解析が止まっている
+        probe_pdf = Pdf.new()
+        probe = probe_pdf.make_stream(data + b"\n" + PARSE_SENTINEL + b"\n")
+        instructions = list(pikepdf.parse_content_stream(probe))
+        if (not instructions
+                or str(instructions[-1].operator) != PARSE_SENTINEL.decode()):
             return 0
+        instructions.pop()
 
         kept = [instruction for instruction in instructions
                 if not is_removable_inline_image(instruction)]
